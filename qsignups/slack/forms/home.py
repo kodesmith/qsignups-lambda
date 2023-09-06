@@ -1,18 +1,21 @@
 from datetime import timedelta, date, datetime
 import traceback
 import pytz
-from qsignups.database import DbManager
-from qsignups.database.orm import AO, Region
-from qsignups.database.orm.views import vwMasterEvents
-from qsignups import constants
-from qsignups.slack import actions, forms, inputs
-from qsignups import google
-from qsignups.google import commands
+from database import DbManager
+from database.orm import AO, Region
+from database.orm.views import vwMasterEvents
+import constants
+from slack import actions, forms, inputs
+import google
+# from google import authenticate
+from utilities import User
 
-def refresh(client, user_id, logger, top_message, team_id, context):
+def refresh(client, user: User, logger, top_message, team_id, context):
     sMsg = ""
     current_week_weinke_url = None
     ao_list = None
+
+    upcoming_qs = []
 
     try:
         # list of AOs for dropdown
@@ -24,7 +27,7 @@ def refresh(client, user_id, logger, top_message, team_id, context):
         # Event pulls
         upcoming_qs = DbManager.find_records(vwMasterEvents, [
             vwMasterEvents.team_id == team_id,
-            vwMasterEvents.q_pax_id == user_id,
+            vwMasterEvents.q_pax_id == user.id,
             vwMasterEvents.event_date > datetime.now(tz=pytz.timezone('US/Central'))
         ])
         upcoming_events = DbManager.find_records(vwMasterEvents, [
@@ -34,23 +37,23 @@ def refresh(client, user_id, logger, top_message, team_id, context):
         ])
 
         current_week_weinke_url = None
-        if constants.use_weinkes():
-            region_record = DbManager.get_record(Region, team_id)
+        
+        region_record = DbManager.get_record(Region, team_id)
 
-            if region_record is None:
-                # team_id not on region table, so we insert it
-                region_record = DbManager.create_record(Region(
-                    team_id = team_id,
-                    bot_token = context['bot_token']
-                ))
-            else:
-                current_week_weinke_url = region_record.current_week_weinke
-                next_week_weinke_url = region_record.next_week_weinke
+        if region_record is None:
+            # team_id not on region table, so we insert it
+            region_record = DbManager.create_record(Region(
+                team_id = team_id,
+                bot_token = context['bot_token']
+            ))
+        else:
+            current_week_weinke_url = region_record.current_week_weinke
+            next_week_weinke_url = region_record.next_week_weinke
 
-            if region_record.bot_token != context['bot_token']:
-                DbManager.update_record(Region, team_id, {
-                    Region.bot_token: context['bot_token']
-                })
+        if region_record.bot_token != context['bot_token']:
+            DbManager.update_record(Region, team_id, {
+                Region.bot_token: context['bot_token']
+            })
 
         # Create upcoming schedule message
         sMsg = '*Upcoming Schedule:*'
@@ -118,7 +121,7 @@ def refresh(client, user_id, logger, top_message, team_id, context):
         }
         blocks.append(new_block)
 
-    if (constants.use_weinkes()) and (current_week_weinke_url != None) and (next_week_weinke_url != None):
+    if (current_week_weinke_url != None) and (next_week_weinke_url != None):
         weinke_blocks = [
             {
                 "type": "image",
@@ -174,24 +177,24 @@ def refresh(client, user_id, logger, top_message, team_id, context):
 
     # Optionally add admin button
     user_info_dict = client.users_info(
-        user=user_id
+        user=user.id
     )
     if user_info_dict['user']['is_admin']:
         button = forms.make_action_button_row([inputs.ActionButton("Manage Region Calendar", action = actions.MANAGE_SCHEDULE_ACTION)])
         blocks.append(button)
         blocks.append(forms.make_action_button_row([inputs.GENERAL_SETTINGS]))
 
-    if google.is_enabled():
-        if commands.is_connected(team_id):
-            blocks.append(forms.make_action_button_row([inputs.GOOGLE_DISCONNECT]))
-        else:
-            blocks.append(forms.make_action_button_row([inputs.GOOGLE_CONNECT]))
+    # if google.is_available(team_id):
+    #     if authenticate.is_connected(team_id):
+    #         blocks.append(forms.make_action_button_row([inputs.GOOGLE_DISCONNECT]))
+    #     else:
+    #         blocks.append(forms.make_action_button_row([inputs.GOOGLE_CONNECT]))
 
     # Attempt to publish view
     try:
         logger.debug(blocks)
         client.views_publish(
-            user_id=user_id,
+            user_id=user.id,
             view={
                 "type": "home",
                 "blocks":blocks
